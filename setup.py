@@ -18,7 +18,9 @@ install_requires = [
     'google-api-python-client',
     'pytest-runner',
     'unidecode',
-    'feedparser'
+    'feedparser',
+    'sqlalchemy',
+    'psycopg2'
 ]
 
 tests_require = [
