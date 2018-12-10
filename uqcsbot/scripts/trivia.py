@@ -4,6 +4,7 @@ import json
 import random
 import requests
 from datetime import datetime, timezone, timedelta
+from functools import partial
 from typing import List, Dict, Union, NamedTuple
 
 from uqcsbot import bot, Command
@@ -25,6 +26,10 @@ BOOLEAN_REACTS = ['this', 'not-this']  # Format of [ <True>, <False> ]
 MULTIPLE_CHOICE_REACTS = ['green_heart', 'yellow_heart', 'heart', 'blue_heart']
 CHOICE_COLORS = ['#6C9935', '#F3C200', '#B6281E', '#3176EF']
 
+# What arguments to use for the cron job version
+CRON_CHANNEL = 'general'
+CRON_SECONDS = 600 # Overrides any -s argument below and ignores MAX_SECONDS rule
+CRON_ARGUMENTS = ''
 
 @bot.on_command('trivia')
 @loading_status
@@ -33,7 +38,7 @@ def handle_trivia(command: Command):
         `!trivia [-d <easy|medium|hard>] [-c <CATEGORY>] [-t <multiple|tf>] [-s <N>] [--cats]`
             - Asks a new trivia question
     """
-    args = parse_arguments(command)
+    args = parse_arguments(command.channel_id, command.arg if command.has_arg() else '')
 
     # End early if the help option was used
     if args.help:
@@ -44,16 +49,15 @@ def handle_trivia(command: Command):
         bot.post_message(command.channel_id, get_categories())
         return
 
-    handle_question(command, args)
+    handle_question(command.channel_id, args)
 
 
-def parse_arguments(command: Command) -> argparse.Namespace:
+def parse_arguments(channel: Channel, arg_string: str) -> argparse.Namespace:
     """
     Parses the arguments for the command
     :param command: The command which the handle_trivia function receives
     :return: An argpase Namespace object with the parsed arguments
     """
-    command_args = command.arg.split() if command.has_arg() else []
 
     parser = argparse.ArgumentParser(prog='!trivia', add_help=False)
 
@@ -69,13 +73,13 @@ def parse_arguments(command: Command) -> argparse.Namespace:
     parser.add_argument('-s', '--seconds', default=30, type=int,
                         help='Number of seconds before posting answer (default: %(default)s)')
     parser.add_argument('--cats', action='store_true', help='Sends a list of valid categories to the user')
-    parser.add_argument('-h', '--help', action='store_true')
+    parser.add_argument('-h', '--help', action='store_true', help='Prints this help message')
 
-    args = parser.parse_args(command_args)
+    args = parser.parse_args(arg_string.split())
 
     # If the help option was used print the help message to the channel (needs access to the parser to do this)
     if args.help:
-        bot.post_message(command.channel_id, parser.format_help())
+        bot.post_message(channel, parser.format_help())
 
     # Constrain the number of seconds to a reasonable frame
     args.seconds = max(MIN_SECONDS, args.seconds)
@@ -103,9 +107,9 @@ def get_categories() -> str:
     return pretty_results
 
 
-def handle_question(command: Command, args: argparse.Namespace):
+def handle_question(channel: Channel, args: argparse.Namespace):
     """Handles getting a question and posting it to the channel as well as scheduling the answer"""
-    question_data = get_question_data(command.channel_id, args)
+    question_data = get_question_data(channel, args)
 
     if question_data is None:
         return
@@ -119,7 +123,7 @@ def handle_question(command: Command, args: argparse.Namespace):
     is_boolean = len(answers) == 1
 
     # Post the question and get the timestamp for the reactions (asterisks bold it)
-    message_ts = bot.post_message(command.channel_id, f'*{question}*')['ts']
+    message_ts = bot.post_message(channel, f'*{question}*')['ts']
 
     # Print the questions (if multiple choice) and add the answer reactions
     if is_boolean:
@@ -130,14 +134,14 @@ def handle_question(command: Command, args: argparse.Namespace):
         answer_text = correct_answer
 
         answers.append(correct_answer)
-        message_ts = post_possible_answers(command.channel_id, answers)
+        message_ts = post_possible_answers(channel, answers)
 
     for reaction in reactions:
-        bot.api.reactions.add(name=reaction, channel=command.channel_id, timestamp=message_ts)
+        bot.api.reactions.add(name=reaction, channel=channel, timestamp=message_ts)
 
     # Schedule the answer to be posted after the specified number of seconds has passed
     answer_message = f'*The answer is: {answer_text}*'
-    schedule_answer(command, answer_message, args.seconds)
+    schedule_answer(channel, answer_message, args.seconds)
 
 
 def get_question_data(channel: Channel, args: argparse.Namespace) -> QuestionData:
@@ -202,9 +206,22 @@ def post_possible_answers(channel: Channel, answers: List[str]) -> float:
     return bot.post_message(channel, '', attachments=attachments)['ts']
 
 
-def schedule_answer(command: Command, answer: str, secs: int):
+def schedule_answer(channel: Channel, answer: str, secs: int):
     """Schedules the given answer to be posted to the channel after the given number of seconds"""
-    post_answer = lambda: bot.post_message(command.channel_id, answer)
+    post_answer = partial(bot.post_message, channel, answer)
     end_date = datetime.now(timezone(timedelta(hours=10))) + timedelta(seconds=secs + 1)
 
     bot._scheduler.add_job(post_answer, 'interval', seconds=secs, end_date=end_date)
+
+@bot.on_schedule('cron', hour=16, minute=43, timezone='Australia/Brisbane')
+def trivia_cron_job():
+    channel = bot.channels.get(CRON_CHANNEL).id
+
+    # Get arguments and update the seconds
+    args = parse_arguments(channel, CRON_ARGUMENTS)
+    args.seconds = CRON_SECONDS
+
+    # Get and post the actual question
+    handle_question(channel, args)
+
+    bot.post_message(channel, f'Answer in {CRON_SECONDS//60} minutes')
