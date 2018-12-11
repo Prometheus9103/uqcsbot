@@ -38,7 +38,7 @@ CHOICE_COLORS = ['#6C9935', '#F3C200', '#B6281E', '#3176EF']
 
 # What arguments to use for the cron job version
 CRON_CHANNEL = 'general'
-CRON_SECONDS = 600  # Overrides any -s argument below and ignores MAX_SECONDS rule
+CRON_SECONDS = 84540  # (One day - 1 minute) Overrides any -s argument below and ignores MAX_SECONDS rule
 CRON_ARGUMENTS = ''
 
 
@@ -265,13 +265,12 @@ def post_possible_answers(channel: Channel, answers: List[str]) -> float:
 
 def schedule_action(action: Callable, secs: int):
     """Schedules the supplied action to be called once in the given number of seconds."""
-    end_date = datetime.now(timezone(timedelta(hours=10))) + timedelta(seconds=secs + 1)
+    run_date = datetime.now(timezone(timedelta(hours=10))) + timedelta(seconds=secs)
+    bot._scheduler.add_job(action, 'date', run_date=run_date)
 
-    bot._scheduler.add_job(action, 'interval', seconds=secs, end_date=end_date)
 
-
-@bot.on_schedule('cron', hour=12, minute=0, timezone='Australia/Brisbane')
-def trivia_cron_job():
+@bot.on_schedule('cron', hour=12, timezone='Australia/Brisbane')
+def daily_trivia():
     """Adds a job that displays a random question to general at lunch time"""
     channel = bot.channels.get(CRON_CHANNEL).id
 
@@ -281,7 +280,9 @@ def trivia_cron_job():
 
     # Get and post the actual question
     handle_question(channel, args, score_counts=True)
-    bot.post_message(channel, f'Answer in {CRON_SECONDS//60} minutes')
+
+    time_until_answer = f'{CRON_SECONDS//60} minutes' if CRON_SECONDS < 3600 else f'{CRON_SECONDS//3600} hours'
+    bot.post_message(channel, f'Answer in {time_until_answer}')
 
 
 # Define the mapping for the leaderboard
