@@ -65,8 +65,7 @@ def handle_trivia(command: Command):
         bot.post_message(command.channel_id, get_categories())
         return
 
-    # TODO: Remove score counts here
-    handle_question(command.channel_id, args, score_counts=True)
+    handle_question(command.channel_id, args)
 
 
 def parse_arguments(channel: Channel, arg_string: str) -> argparse.Namespace:
@@ -322,7 +321,6 @@ def update_leaderboard(channel: Channel, ts: float, correct_reaction: str):
     correct_users = get_correct_users(reaction_users, correct_reaction)
 
     # Update the database
-    # TODO: Don't do this every time (store engine on bot?)
     engine = sqlalchemy.create_engine(os.environ.get("PG_DATABASE_URL"))
 
     Session = sessionmaker(bind=engine)
@@ -370,7 +368,6 @@ def get_correct_users(reactions: List[ReactionUsers], correct_reaction: str) -> 
 
 def show_leaderboard(channel: Channel):
     """Posts the trivia leaderboard to the given channel"""
-    # TODO: Don't do this every time (store engine on bot?)
     engine = sqlalchemy.create_engine(os.environ.get("PG_DATABASE_URL"))
 
     Session = sessionmaker(bind=engine)
