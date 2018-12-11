@@ -2,6 +2,8 @@ import argparse
 import base64
 import json
 import random
+
+import os
 import requests
 from datetime import datetime, timezone, timedelta
 from functools import partial
@@ -29,7 +31,7 @@ MIN_SECONDS = 5
 MAX_SECONDS = 300
 
 BOOLEAN_REACTS = ['this', 'not-this']  # Format of [ <True>, <False> ]
-MULTIPLE_CHOICE_REACTS = ['green_heart', 'yellow_heart', 'heart', 'blue_heart'] # Colours should match CHOICE_COLORS
+MULTIPLE_CHOICE_REACTS = ['green_heart', 'yellow_heart', 'heart', 'blue_heart']  # Colours should match CHOICE_COLORS
 CHOICE_COLORS = ['#6C9935', '#F3C200', '#B6281E', '#3176EF']
 
 # What arguments to use for the cron job version
@@ -61,7 +63,8 @@ def handle_trivia(command: Command):
         bot.post_message(command.channel_id, get_categories())
         return
 
-    handle_question(command.channel_id, args)
+    # TODO: Remove score counts here
+    handle_question(command.channel_id, args, score_counts=True)
 
 
 def parse_arguments(channel: Channel, arg_string: str) -> argparse.Namespace:
@@ -120,7 +123,7 @@ def get_categories() -> str:
     return pretty_results
 
 
-def handle_question(channel: Channel, args: argparse.Namespace, score_counts: bool=False):
+def handle_question(channel: Channel, args: argparse.Namespace, score_counts: bool = False):
     """
     Handles getting a question and posting it to the channel as well as scheduling the answer.
     Returns the reaction string for the correct answer.
@@ -235,6 +238,7 @@ def decode_b64(encoded: str) -> str:
     """Takes a base64 encoded string. Returns the decoded version to utf-8."""
     return base64.b64decode(encoded).decode('utf-8')
 
+
 def get_correct_reaction(question_data: QuestionData):
     """Returns the reaction that matches with the correct answer"""
     if (question_data.is_boolean):
@@ -243,6 +247,7 @@ def get_correct_reaction(question_data: QuestionData):
         correct_reaction = MULTIPLE_CHOICE_REACTS[question_data.answers.index(question_data.correct_answer)]
 
     return correct_reaction
+
 
 def post_possible_answers(channel: Channel, answers: List[str]) -> float:
     """
@@ -278,23 +283,99 @@ def trivia_cron_job():
     bot.post_message(channel, f'Answer in {CRON_SECONDS//60} minutes')
 
 
-# Defines the mapping for the leaderboard
+# Define the mapping for the leaderboard
 Base = sqlalchemy.ext.declarative.declarative_base()
 
+
 class UserScore(Base):
+    """
+    Class for use with sqlalchemy for the trivia scoreboard
+    """
     __tablename__ = 'trivia_leaderboard'
     id = Column(Integer, primary_key=True)
-    slack_id = Column(String, unique=True)
+    user_id = Column(String, unique=True)
     score = Column(Integer)
 
-    def __init__(self, slack_id: str, score: int):
-        self.slack_id = slack_id
+    def __init__(self, user_id: str, score: int):
+        self.user_id = user_id
         self.score = score
 
 
 def update_leaderboard(channel: Channel, ts: float, correct_reaction: str):
-    reactions = bot.reactions.get(channel=channel, timestap=ts)
-    bot.post_message(reactions)
+    """
+    Updates the leaderboard by checking the message in the given channel with the given timestamp and seeing
+    which users chose the given correct_reaction.
+    If a user has tried to cheat the system by selecting all reactions they will get no points
+    """
+    reaction_query = bot.api.reactions.get(channel=channel, timestamp=ts)
+
+    if not reaction_query['ok'] or reaction_query['type'] != 'message':
+        bot.post_message(channel, 'There was a problem updating the scores')
+        return
+
+    reactions = reaction_query['message']['reactions']
+
+    # Get the list of user ids that answered correctly
+    correct_users = None
+    for reaction in reactions:
+        if reaction["name"] == correct_reaction:
+            correct_users = set(reaction["users"])
+            break
+
+    if correct_users is None:
+        bot.post_message(channel, 'There was a problem updating the scores')
+        return
+
+    # Disqualify them if they answered more than one of the applicable reactions
+    is_boolean = correct_reaction == BOOLEAN_REACTS[0] or correct_reaction == BOOLEAN_REACTS[1]
+    valid_reactions = BOOLEAN_REACTS if is_boolean else MULTIPLE_CHOICE_REACTS
+
+    for reaction in reactions:
+        if reaction["name"] != correct_reaction and reaction["name"] in valid_reactions:
+            correct_users = correct_users - set(reaction["users"])
+
+    # Update the database
+    # TODO: Don't do this every time (store engine on bot?)
+    engine = sqlalchemy.create_engine(os.environ.get("PG_DATABASE_URL"))
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    # Update the users already in the brain (db)
+    existing_users = session.query(UserScore).filter(UserScore.user_id.in_(correct_users)).all()
+
+    for user in existing_users:
+        user.score += 1
+
+    # Remove the updated users from the correct users set and add a new row for them in the brain (db)
+    existing_user_ids = set(user.user_id for user in existing_users)
+    correct_users -= existing_user_ids
+    session.add_all(UserScore(user_id, 1) for user_id in correct_users)
+
+    session.commit()
+
 
 def show_leaderboard(channel: Channel):
-    pass
+    """Posts the trivia leaderboard to the given channel"""
+    # TODO: Don't do this every time (store engine on bot?)
+    engine = sqlalchemy.create_engine(os.environ.get("PG_DATABASE_URL"))
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    # Get the display_names and scores for each user
+    user_scores = session.query(UserScore).all()
+    display_names = [bot.users.get(user.user_id).display_name for user in user_scores]
+    scores = [user.score for user in user_scores]
+    longest_name = max(len(max(display_names, key=len)), 4)  # max(x, 4) to account for rare case of all names < 4
+
+    # Construct the message
+    message = '```\n{: <{}}  |  Score\n'.format('Name', longest_name)
+    message += '-' * (len(message) - 5) + '\n'
+
+    for (name, score) in zip(display_names, scores):
+        message += f'{name: <{longest_name}}  |  {score}\n'
+
+    message += '```'
+
+    bot.post_message(channel, message)
