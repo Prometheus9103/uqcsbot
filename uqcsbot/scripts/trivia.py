@@ -1,18 +1,17 @@
 import argparse
 import base64
 import json
-import random
-
 import os
-import requests
+import random
 from datetime import datetime, timezone, timedelta
 from functools import partial
-from typing import List, Dict, Union, NamedTuple, Optional, Callable
+from typing import List, Dict, Union, NamedTuple, Optional, Callable, Set
 
+import requests
 import sqlalchemy
 from sqlalchemy import Column, Integer, String
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 from uqcsbot import bot, Command
 from uqcsbot.api import Channel
@@ -25,6 +24,9 @@ CATEGORIES_URL = "https://opentdb.com/api_category.php"
 QuestionData = NamedTuple('QuestionData',
                           [('type', str), ('question', str), ('correct_answer', str), ('answers', List[str]),
                            ('is_boolean', bool)])
+
+# Contains information about a reaction and the list of users who used said reaction
+ReactionUsers = NamedTuple('ReactionUsers', [('name', str), ('users', Set[str])])
 
 # Customisation options
 MIN_SECONDS = 5
@@ -315,24 +317,9 @@ def update_leaderboard(channel: Channel, ts: float, correct_reaction: str):
 
     reactions = reaction_query['message']['reactions']
 
-    # Get the list of user ids that answered correctly
-    correct_users = None
-    for reaction in reactions:
-        if reaction["name"] == correct_reaction:
-            correct_users = set(reaction["users"])
-            break
-
-    if correct_users is None:
-        bot.post_message(channel, 'There was a problem updating the scores')
-        return
-
-    # Disqualify them if they answered more than one of the applicable reactions
-    is_boolean = correct_reaction == BOOLEAN_REACTS[0] or correct_reaction == BOOLEAN_REACTS[1]
-    valid_reactions = BOOLEAN_REACTS if is_boolean else MULTIPLE_CHOICE_REACTS
-
-    for reaction in reactions:
-        if reaction["name"] != correct_reaction and reaction["name"] in valid_reactions:
-            correct_users = correct_users - set(reaction["users"])
+    # Convert the dictionary of reactions to a list of ReactionUsers and then get the correct users
+    reaction_users = [ReactionUsers(react["name"], set(react["users"])) for react in reactions]
+    correct_users = get_correct_users(reaction_users, correct_reaction)
 
     # Update the database
     # TODO: Don't do this every time (store engine on bot?)
@@ -347,12 +334,38 @@ def update_leaderboard(channel: Channel, ts: float, correct_reaction: str):
     for user in existing_users:
         user.score += 1
 
-    # Remove the updated users from the correct users set and add a new row for them in the brain (db)
+    # Add a row for all of the new users and set their score to 1
     existing_user_ids = set(user.user_id for user in existing_users)
-    correct_users -= existing_user_ids
-    session.add_all(UserScore(user_id, 1) for user_id in correct_users)
+    session.add_all(UserScore(user_id, 1) for user_id in (correct_users - existing_user_ids))
 
     session.commit()
+
+
+def get_correct_users(reactions: List[ReactionUsers], correct_reaction: str) -> Set[str]:
+    """
+    Get a set of all of the user_ids that answered the question with the correct_reaction.
+    Excludes anyone who answered with more than one of the valid reactions.
+    """
+
+    # Get the list of user ids that answered correctly
+    correct_users = None
+    for reaction in reactions:
+        if reaction.name == correct_reaction:
+            correct_users = reaction.users
+            break
+
+    if correct_users is None:
+        return set()
+
+    # Disqualify them if they answered more than one of the applicable reactions
+    is_boolean = correct_reaction == BOOLEAN_REACTS[0] or correct_reaction == BOOLEAN_REACTS[1]
+    valid_reactions = BOOLEAN_REACTS if is_boolean else MULTIPLE_CHOICE_REACTS
+
+    for reaction in reactions:
+        if reaction.name != correct_reaction and reaction.name in valid_reactions:
+            correct_users = correct_users - reaction.users
+
+    return set(correct_users)
 
 
 def show_leaderboard(channel: Channel):
