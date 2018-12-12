@@ -38,7 +38,7 @@ CHOICE_COLORS = ['#6C9935', '#F3C200', '#B6281E', '#3176EF']
 
 # What arguments to use for the cron job version
 CRON_CHANNEL = 'general'
-CRON_SECONDS = 84540  # (One day - 1 minute) Overrides any -s argument below and ignores MAX_SECONDS rule
+CRON_SECONDS = 86385  # (One day - 15 seconds) Overrides any -s argument below and ignores MAX_SECONDS rule
 CRON_ARGUMENTS = ''
 
 
@@ -281,8 +281,20 @@ def daily_trivia():
     # Get and post the actual question
     handle_question(channel, args, score_counts=True)
 
-    time_until_answer = f'{CRON_SECONDS//60} minutes' if CRON_SECONDS < 3600 else f'{CRON_SECONDS//3600} hours'
-    bot.post_message(channel, f'Answer in {time_until_answer}')
+    # Format a nice message to tell when the answer will be
+    hours = CRON_SECONDS//3600
+    minutes = (CRON_SECONDS - (hours * 3600))//60
+    if minutes > 55:
+        hours += 1
+        minutes = 0
+
+    time_until_answer = 'Answer in '
+    if hours > 0:
+        time_until_answer += f'{hours} hours'
+    if minutes > 0:
+        time_until_answer += f' and {minutes} minutes' if hours > 0 else f'{minutes} minutes'
+
+    bot.post_message(channel, time_until_answer)
 
 
 # Define the mapping for the leaderboard
