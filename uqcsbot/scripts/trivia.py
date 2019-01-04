@@ -386,8 +386,10 @@ def show_leaderboard(channel: Channel):
     Session = sessionmaker(bind=engine)
     session = Session()
 
-    # Get the display_names and scores for each user
+    # Get the display_names and scores for each user and sort highest score first
     user_scores = session.query(UserScore).all()
+    user_scores.sort(key=lambda x: x.score, reverse=True)
+
     display_names = [bot.users.get(user.user_id).display_name for user in user_scores]
     scores = [user.score for user in user_scores]
     longest_name = max(len(max(display_names, key=len)), 4)  # max(x, 4) to account for rare case of all names < 4
